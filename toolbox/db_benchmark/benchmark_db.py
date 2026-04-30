@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import logging
 import os
 import sys
 from datetime import datetime
@@ -47,16 +48,43 @@ class BenchmarkResult:
     cache_stats: CacheStats
 
 
+logger = logging.getLogger(__name__)
+
+
+def configure_logging(level_name: str) -> None:
+    normalized = level_name.strip().upper()
+    if normalized in {"NONE", "OFF", "DISABLE", "DISABLED"}:
+        level = logging.CRITICAL + 1
+    else:
+        level = getattr(logging, normalized, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
+    logger.info("Logging initialized at level=%s", logging.getLevelName(level))
+
+
 def run_benchmark(
     sql_text: str,
     *,
     host: str = "localhost",
-    port: int = 5431,
+    port: int = 5432,
     dbname: str = "vision_zero",
     user: str = "visionzero",
     password: str = "visionzero",
     options: str | None = None,
+    connect_timeout: int | None = None,
 ) -> BenchmarkResult:
+    logger.info(
+        "Starting benchmark: host=%s port=%s dbname=%s user=%s sql_chars=%s",
+        host,
+        port,
+        dbname,
+        user,
+        len(sql_text),
+    )
     try:
         import psycopg
     except ImportError as exc:
@@ -65,22 +93,35 @@ def run_benchmark(
             "Install it with: pip install psycopg[binary]"
         ) from exc
 
+    logger.info("Opening PostgreSQL connection")
+    connect_kwargs = {
+        "host": host,
+        "port": port,
+        "dbname": dbname,
+        "user": user,
+        "password": password,
+        "options": options,
+        "autocommit": True,
+    }
+    if connect_timeout is not None:
+        connect_kwargs["connect_timeout"] = connect_timeout
+        logger.info("Using connect_timeout=%ss", connect_timeout)
+
     with psycopg.connect(
-        host=host,
-        port=port,
-        dbname=dbname,
-        user=user,
-        password=password,
-        options=options,
-        autocommit=True,
+        **connect_kwargs,
     ) as conn:
+        logger.info("PostgreSQL connection established")
         with conn.cursor() as cur:
+            logger.info("Executing benchmark SQL")
             start = perf_counter()
             cur.execute(sql_text)
+            logger.info("SQL execution finished, fetching rows")
             rows = cur.fetchall()
             end = perf_counter()
+            logger.info("Fetched %s rows, collecting cache stats", len(rows))
             cur.execute(CACHE_STATS_SQL)
             cache_row = cur.fetchone()
+            logger.info("Cache stats query complete")
 
     if cache_row is None:
         cache_stats = CacheStats(heap_read=0, heap_hit=0, hit_ratio=None)
@@ -182,6 +223,12 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
                 query_index = (run_count - 1) % total_queries
                 sql_text = sql_statements[query_index]
                 timestamp = datetime.now().strftime("%H:%M:%S")
+                logger.info(
+                    "Loop iteration start: run=%s query=%s/%s",
+                    run_count,
+                    query_index + 1,
+                    total_queries,
+                )
                 try:
                     result = run_benchmark(
                         sql_text,
@@ -191,10 +238,17 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
                         user=args.user,
                         password=args.password,
                         options=args.pg_options,
+                        connect_timeout=args.connect_timeout,
                     )
                     timings_ms.append(result.execution_time_ms)
                     latest_cache_stats = result.cache_stats
                     last_query_index = query_index
+                    logger.info(
+                        "Loop iteration success: run=%s duration_ms=%.3f rows=%s",
+                        run_count,
+                        result.execution_time_ms,
+                        result.row_count,
+                    )
                     entries.append(
                         f"{run_count:05d} {timestamp}  {result.execution_time_ms:10.3f} ms  "
                         f"rows={result.row_count}  query={query_index + 1}/{total_queries}"
@@ -202,6 +256,7 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
                 except Exception as exc:  # noqa: BLE001 - keep loop alive while benchmarking
                     failures += 1
                     last_query_index = query_index
+                    logger.exception("Loop iteration failed: run=%s", run_count)
                     entries.append(
                         f"{run_count:05d} {timestamp}  ERROR {exc.__class__.__name__}: {exc}  "
                         f"query={query_index + 1}/{total_queries}"
@@ -308,8 +363,8 @@ def main() -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("PGPORT", "5431")),
-        help="PostgreSQL port (default: 5431 or PGPORT).",
+        default=int(os.getenv("PGPORT", "5432")),
+        help="PostgreSQL port (default: 5432 or PGPORT).",
     )
     parser.add_argument(
         "--dbname",
@@ -342,33 +397,60 @@ def main() -> None:
         help="Run continuously with an interactive terminal UI.",
     )
     parser.add_argument(
+        "--log-level",
+        default=os.getenv("BENCHMARK_LOG_LEVEL", "NONE"),
+        help="Python logging level (default: BENCHMARK_LOG_LEVEL or NONE).",
+    )
+    parser.add_argument(
+        "--connect-timeout",
+        type=int,
+        default=(
+            int(os.getenv("PGCONNECT_TIMEOUT", "10"))
+            if os.getenv("PGCONNECT_TIMEOUT")
+            else None
+        ),
+        help=(
+            "PostgreSQL connection timeout in seconds "
+            "(default: PGCONNECT_TIMEOUT if set; otherwise no explicit timeout)."
+        ),
+    )
+    parser.add_argument(
         "--interval-seconds",
         type=float,
         default=1.0,
         help="Delay between loop iterations in seconds (default: 1.0).",
     )
     args = parser.parse_args()
+    configure_logging(args.log_level)
+    logger.info("Benchmark script started")
+    logger.info("Using SQL file: %s", args.sql_file)
     args.pg_options = build_pgoptions_from_env(args.pg_options)
+    logger.info("Effective pg_options: %s", args.pg_options if args.pg_options else "<none>")
     warn_for_startup_only_env_tunables()
 
     if args.interval_seconds <= 0:
         print("--interval-seconds must be greater than 0.", file=sys.stderr)
         raise SystemExit(1)
 
+    logger.info("Reading SQL text from file")
     sql_text = args.sql_file.read_text()
     sql_statements = parse_sql_statements(sql_text)
+    logger.info("Loaded %s SQL statement(s)", len(sql_statements))
     if not sql_statements:
         print(f"No SQL statements found in {args.sql_file}.", file=sys.stderr)
         raise SystemExit(1)
 
     if args.loop:
+        logger.info("Entering loop mode")
         if not sys.stdout.isatty():
             print("--loop requires an interactive TTY terminal.", file=sys.stderr)
             raise SystemExit(1)
         run_loop_ui(args, sql_statements)
+        logger.info("Loop mode exited")
         return
 
     try:
+        logger.info("Running single-shot benchmark")
         result = run_benchmark(
             sql_statements[0],
             host=args.host,
@@ -377,11 +459,16 @@ def main() -> None:
             user=args.user,
             password=args.password,
             options=args.pg_options,
+            connect_timeout=args.connect_timeout,
         )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
+    except Exception:
+        logger.exception("Unhandled benchmark failure")
+        raise
 
+    logger.info("Single-shot benchmark complete")
     print(f"Execution time: {result.execution_time_ms:.3f} ms")
     print(f"Rows returned: {result.row_count}")
     if result.cache_stats.hit_ratio is None:
