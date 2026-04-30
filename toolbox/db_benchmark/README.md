@@ -10,7 +10,7 @@ From `toolbox/db_benchmark/`:
 docker compose run --rm benchmark-db
 ```
 
-The benchmark runs in an interactive terminal UI and cycles through all loaded SQL statements. Press `q` to quit.
+The benchmark runs in an interactive terminal UI and cycles through all loaded SQL statements back-to-back (no configurable delay between queries). Press `q` to quit.
 
 ## Targeting a specific Postgres instance
 

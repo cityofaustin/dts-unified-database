@@ -18,7 +18,10 @@ CACHE_STATS_SQL = """
 SELECT
     sum(heap_blks_read) as heap_read,
     sum(heap_blks_hit)  as heap_hit,
-    (sum(heap_blks_hit) / (sum(heap_blks_hit) + sum(heap_blks_read))) * 100 as hit_ratio
+    (
+        sum(heap_blks_hit)::double precision
+        / NULLIF((sum(heap_blks_hit) + sum(heap_blks_read))::double precision, 0)
+    ) * 100 as hit_ratio
 FROM pg_statio_user_tables;
 """
 
@@ -197,7 +200,6 @@ def warn_for_startup_only_env_tunables() -> None:
 
 
 def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
-    interval_seconds = args.interval_seconds
     total_queries = len(sql_statements)
 
     def _loop(stdscr: curses.window) -> None:
@@ -214,54 +216,50 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
         latest_cache_stats = CacheStats(heap_read=0, heap_hit=0, hit_ratio=None)
         last_query_index: int | None = None
         started = perf_counter()
-        next_run_at = perf_counter()
 
         while True:
-            now = perf_counter()
-            if now >= next_run_at:
-                run_count += 1
-                query_index = (run_count - 1) % total_queries
-                sql_text = sql_statements[query_index]
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                logger.info(
-                    "Loop iteration start: run=%s query=%s/%s",
-                    run_count,
-                    query_index + 1,
-                    total_queries,
+            run_count += 1
+            query_index = (run_count - 1) % total_queries
+            sql_text = sql_statements[query_index]
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            logger.info(
+                "Loop iteration start: run=%s query=%s/%s",
+                run_count,
+                query_index + 1,
+                total_queries,
+            )
+            try:
+                result = run_benchmark(
+                    sql_text,
+                    host=args.host,
+                    port=args.port,
+                    dbname=args.dbname,
+                    user=args.user,
+                    password=args.password,
+                    options=args.pg_options,
+                    connect_timeout=args.connect_timeout,
                 )
-                try:
-                    result = run_benchmark(
-                        sql_text,
-                        host=args.host,
-                        port=args.port,
-                        dbname=args.dbname,
-                        user=args.user,
-                        password=args.password,
-                        options=args.pg_options,
-                        connect_timeout=args.connect_timeout,
-                    )
-                    timings_ms.append(result.execution_time_ms)
-                    latest_cache_stats = result.cache_stats
-                    last_query_index = query_index
-                    logger.info(
-                        "Loop iteration success: run=%s duration_ms=%.3f rows=%s",
-                        run_count,
-                        result.execution_time_ms,
-                        result.row_count,
-                    )
-                    entries.append(
-                        f"{run_count:05d} {timestamp}  {result.execution_time_ms:10.3f} ms  "
-                        f"rows={result.row_count}  query={query_index + 1}/{total_queries}"
-                    )
-                except Exception as exc:  # noqa: BLE001 - keep loop alive while benchmarking
-                    failures += 1
-                    last_query_index = query_index
-                    logger.exception("Loop iteration failed: run=%s", run_count)
-                    entries.append(
-                        f"{run_count:05d} {timestamp}  ERROR {exc.__class__.__name__}: {exc}  "
-                        f"query={query_index + 1}/{total_queries}"
-                    )
-                next_run_at = now + interval_seconds
+                timings_ms.append(result.execution_time_ms)
+                latest_cache_stats = result.cache_stats
+                last_query_index = query_index
+                logger.info(
+                    "Loop iteration success: run=%s duration_ms=%.3f rows=%s",
+                    run_count,
+                    result.execution_time_ms,
+                    result.row_count,
+                )
+                entries.append(
+                    f"{run_count:05d} {timestamp}  {result.execution_time_ms:10.3f} ms  "
+                    f"rows={result.row_count}  query={query_index + 1}/{total_queries}"
+                )
+            except Exception as exc:  # noqa: BLE001 - keep loop alive while benchmarking
+                failures += 1
+                last_query_index = query_index
+                logger.exception("Loop iteration failed: run=%s", run_count)
+                entries.append(
+                    f"{run_count:05d} {timestamp}  ERROR {exc.__class__.__name__}: {exc}  "
+                    f"query={query_index + 1}/{total_queries}"
+                )
 
             stdscr.erase()
             height, width = stdscr.getmaxyx()
@@ -290,7 +288,6 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
             add_line(stdscr, divider_y, "-" * max(1, width - 1))
 
             elapsed_seconds = max(0.0, perf_counter() - started)
-            next_in = max(0.0, next_run_at - perf_counter())
             success_count = len(timings_ms)
             mean_ms = (sum(timings_ms) / success_count) if success_count else 0.0
             min_ms = min(timings_ms) if success_count else 0.0
@@ -304,7 +301,7 @@ def run_loop_ui(args: argparse.Namespace, sql_statements: list[str]) -> None:
             )
 
             stats_lines = [
-                f"Runs: {run_count}  Success: {success_count}  Failures: {failures}  Interval: {interval_seconds:.0f}s  Next: {next_in:.1f}s",
+                f"Runs: {run_count}  Success: {success_count}  Failures: {failures}",
                 f"Queries loaded: {total_queries}  Last query: {(last_query_index + 1) if last_query_index is not None else 'n/a'}",
                 f"Mean: {mean_ms:.3f} ms  Min: {min_ms:.3f} ms  Max: {max_ms:.3f} ms",
                 f"P50: {p50_ms:.3f} ms  P95: {p95_ms:.3f} ms",
@@ -409,12 +406,6 @@ def main() -> None:
             "(default: PGCONNECT_TIMEOUT if set; otherwise no explicit timeout)."
         ),
     )
-    parser.add_argument(
-        "--interval-seconds",
-        type=float,
-        default=1.0,
-        help="Delay between loop iterations in seconds (default: 1.0).",
-    )
     args = parser.parse_args()
     configure_logging(args.log_level)
     logger.info("Benchmark script started")
@@ -422,10 +413,6 @@ def main() -> None:
     args.pg_options = build_pgoptions_from_env(args.pg_options)
     logger.info("Effective pg_options: %s", args.pg_options if args.pg_options else "<none>")
     warn_for_startup_only_env_tunables()
-
-    if args.interval_seconds <= 0:
-        print("--interval-seconds must be greater than 0.", file=sys.stderr)
-        raise SystemExit(1)
 
     logger.info("Reading SQL text from file")
     sql_text = args.sql_file.read_text()
