@@ -392,11 +392,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--loop",
-        action="store_true",
-        help="Run continuously with an interactive terminal UI.",
-    )
-    parser.add_argument(
         "--log-level",
         default=os.getenv("BENCHMARK_LOG_LEVEL", "NONE"),
         help="Python logging level (default: BENCHMARK_LOG_LEVEL or NONE).",
@@ -440,47 +435,12 @@ def main() -> None:
         print(f"No SQL statements found in {args.sql_file}.", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.loop:
-        logger.info("Entering loop mode")
-        if not sys.stdout.isatty():
-            print("--loop requires an interactive TTY terminal.", file=sys.stderr)
-            raise SystemExit(1)
-        run_loop_ui(args, sql_statements)
-        logger.info("Loop mode exited")
-        return
-
-    try:
-        logger.info("Running single-shot benchmark")
-        result = run_benchmark(
-            sql_statements[0],
-            host=args.host,
-            port=args.port,
-            dbname=args.dbname,
-            user=args.user,
-            password=args.password,
-            options=args.pg_options,
-            connect_timeout=args.connect_timeout,
-        )
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1) from exc
-    except Exception:
-        logger.exception("Unhandled benchmark failure")
-        raise
-
-    logger.info("Single-shot benchmark complete")
-    print(f"Execution time: {result.execution_time_ms:.3f} ms")
-    print(f"Rows returned: {result.row_count}")
-    if result.cache_stats.hit_ratio is None:
-        cache_hit_ratio = "n/a"
-    else:
-        cache_hit_ratio = f"{result.cache_stats.hit_ratio:.2f}%"
-    print(
-        "Cache stats: "
-        f"heap_read={result.cache_stats.heap_read} "
-        f"heap_hit={result.cache_stats.heap_hit} "
-        f"hit_ratio={cache_hit_ratio}"
-    )
+    logger.info("Entering loop mode")
+    if not sys.stdout.isatty():
+        print("This benchmark requires an interactive TTY terminal.", file=sys.stderr)
+        raise SystemExit(1)
+    run_loop_ui(args, sql_statements)
+    logger.info("Loop mode exited")
 
 
 if __name__ == "__main__":

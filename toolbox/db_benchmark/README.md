@@ -1,6 +1,6 @@
 # DB Benchmark Helper
 
-This tool runs `benchmark_db.py` in Docker and executes the SQL in `timing_queries.sql`.
+This tool runs `benchmark_db.py` in Docker and continuously executes the SQL statements in `timing_queries.sql` in a loop.
 
 ## Quick start
 
@@ -9,6 +9,8 @@ From `toolbox/db_benchmark/`:
 ```shell
 docker compose run --rm benchmark-db
 ```
+
+The benchmark runs in an interactive terminal UI and cycles through all loaded SQL statements. Press `q` to quit.
 
 ## Targeting a specific Postgres instance
 
