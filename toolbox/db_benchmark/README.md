@@ -12,7 +12,7 @@ docker compose run --rm benchmark-db
 
 ## Targeting a specific Postgres instance
 
-The benchmark container reads standard `PG*` environment variables. You can override them at runtime:
+The benchmark container reads standard `PG*` environment variables. You can override them at runtime via the environment or via argument flags. Via the environment, a custom invocation might look like this:
 
 ```shell
 PGHOST=host.docker.internal PGPORT=5431 PGDATABASE=vision_zero PGUSER=visionzero PGPASSWORD=visionzero docker compose run --rm benchmark-db
@@ -61,7 +61,7 @@ For Vision Zero:
 ./vision-zero db-up
 ```
 
-Then run the benchmark against it (`PGHOST=host.docker.internal`, `PGPORT=5431`).
+Then run the benchmark against it.
 
 To verify the effective settings in Postgres:
 
