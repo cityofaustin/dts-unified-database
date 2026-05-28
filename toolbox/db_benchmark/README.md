@@ -61,7 +61,7 @@ The main local Postgres container (`docker-compose.yml`) supports these tunables
 
 After editing `.env`, restart the DB:
 
-For Vision Zero:
+For [Vision Zero](https://github.com/cityofaustin/vision-zero):
 
 ```shell
 ./vision-zero db-down
