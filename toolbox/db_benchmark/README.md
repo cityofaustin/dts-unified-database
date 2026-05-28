@@ -20,6 +20,11 @@ The benchmark container reads standard `PG*` environment variables. You can over
 PGHOST=host.docker.internal PGPORT=5431 PGDATABASE=vision_zero PGUSER=visionzero PGPASSWORD=visionzero docker compose run --rm benchmark-db
 ```
 
+## 🤖 LLM usage
+
+This application was created using Cursor's Composer model. It was created as a helper tool to assist in
+the recent profiling of our production and local database performance.
+
 ## Tuning Postgres for local benchmarking
 
 The main local Postgres container (`docker-compose.yml`) supports these tunables through `.env`:
